@@ -1,10 +1,13 @@
-import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
+import { useState, useEffect, useCallback, lazy, Suspense, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Header from './components/Header'
 import Hero from './components/Hero'
 import AnimeRow from './components/AnimeRow'
 import AnimeGrid from './components/AnimeGrid'
 import Footer from './components/Footer'
+import WatchingNow from './components/WatchingNow'
+import Recommendations from './components/Recommendations'
+import PeopleAlsoSearch from './components/PeopleAlsoSearch'
 import { Anime } from './types/anime'
 import {
   fetchTopAnime,
@@ -15,31 +18,17 @@ import {
   searchAnime
 } from './services/animeService'
 
-// Lazy load non-critical components
-const WatchingNow = lazy(() => import('./components/WatchingNow'))
-const Recommendations = lazy(() => import('./components/Recommendations'))
-const PeopleAlsoSearch = lazy(() => import('./components/PeopleAlsoSearch'))
+// Lazy load only modal
 const TeaserModal = lazy(() => import('./components/TeaserModal'))
-
-// Loading fallback
-const SectionLoader = () => (
-  <div className="py-8 px-4 md:px-12">
-    <div className="h-6 w-48 bg-[#1a1a1a] rounded mb-4 animate-pulse" />
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-      {[...Array(4)].map((_, i) => (
-        <div key={i} className="aspect-[2/3] bg-[#1a1a1a] rounded animate-pulse" />
-      ))}
-    </div>
-  </div>
-)
 
 function App() {
   const [selectedAnime, setSelectedAnime] = useState<Anime | null>(null)
+  const dataLoadedRef = useRef(false)
 
-  // Hero data - fetched once, passed to Hero component
+  // Hero data
   const [heroAnime, setHeroAnime] = useState<Anime[]>([])
 
-  // Homepage data - NEVER overwritten by search
+  // Homepage data - separate state for each section
   const [trendingAnime, setTrendingAnime] = useState<Anime[]>([])
   const [popularAnime, setPopularAnime] = useState<Anime[]>([])
   const [topAnime, setTopAnime] = useState<Anime[]>([])
@@ -51,101 +40,46 @@ function App() {
   const [searchLoading, setSearchLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
 
-  // Loading states for individual sections
-  const [loadingTrending, setLoadingTrending] = useState(true)
-  const [loadingPopular, setLoadingPopular] = useState(true)
-  const [loadingTop, setLoadingTop] = useState(true)
-  const [loadingUpcoming, setLoadingUpcoming] = useState(true)
-  const [loadingAction, setLoadingAction] = useState(true)
-
-  // Error states
-  const [errorTrending, setErrorTrending] = useState<string | null>(null)
-  const [errorPopular, setErrorPopular] = useState<string | null>(null)
-  const [errorTop, setErrorTop] = useState<string | null>(null)
-  const [errorUpcoming, setErrorUpcoming] = useState<string | null>(null)
-  const [errorAction, setErrorAction] = useState<string | null>(null)
+  // Single loading state for initial load
+  const [isInitialLoading, setIsInitialLoading] = useState(true)
 
   // Derived state
   const isSearchMode = searchResults !== null
   const showNoResults = isSearchMode && searchResults.length === 0 && !searchLoading
 
-  // Load all data once at parent level
+  // Load all data ONCE on mount - optimized for speed
   useEffect(() => {
+    if (dataLoadedRef.current) return
+    dataLoadedRef.current = true
+
     const loadAllData = async () => {
-      // Fetch hero data first (priority)
       try {
-        const hero = await fetchTopAnime(6)
-        setHeroAnime(hero)
-      } catch {
-        console.error('Failed to load hero data')
-      }
-
-      // Fetch trending
-      try {
-        setLoadingTrending(true)
-        const trending = await fetchTrendingAnime(12)
+        // Batch 1: Fetch hero + trending + popular in parallel (3 requests)
+        const [hero, trending, popular] = await Promise.all([
+          fetchTopAnime(12),
+          fetchTrendingAnime(12),
+          fetchPopularAnime(12)
+        ])
+        
+        // Set immediately for fast first paint
+        setHeroAnime(hero.slice(0, 6))
         setTrendingAnime(trending)
-        setErrorTrending(null)
-      } catch {
-        setErrorTrending('Failed to load')
-      } finally {
-        setLoadingTrending(false)
-      }
-
-      await new Promise((r) => setTimeout(r, 400))
-
-      // Fetch popular
-      try {
-        setLoadingPopular(true)
-        const popular = await fetchPopularAnime(12)
         setPopularAnime(popular)
-        setErrorPopular(null)
-      } catch {
-        setErrorPopular('Failed to load')
-      } finally {
-        setLoadingPopular(false)
-      }
-
-      await new Promise((r) => setTimeout(r, 400))
-
-      // Fetch top anime
-      try {
-        setLoadingTop(true)
-        const top = await fetchTopAnime(12)
-        setTopAnime(top)
-        setErrorTop(null)
-      } catch {
-        setErrorTop('Failed to load')
-      } finally {
-        setLoadingTop(false)
-      }
-
-      await new Promise((r) => setTimeout(r, 400))
-
-      // Fetch upcoming
-      try {
-        setLoadingUpcoming(true)
-        const upcoming = await fetchUpcomingAnime(12)
-        setUpcomingAnime(upcoming)
-        setErrorUpcoming(null)
-      } catch {
-        setErrorUpcoming('Failed to load')
-      } finally {
-        setLoadingUpcoming(false)
-      }
-
-      await new Promise((r) => setTimeout(r, 400))
-
-      // Fetch action anime
-      try {
-        setLoadingAction(true)
-        const action = await fetchAnimeByGenre(1, 12)
-        setActionAnime(action)
-        setErrorAction(null)
-      } catch {
-        setErrorAction('Failed to load')
-      } finally {
-        setLoadingAction(false)
+        setTopAnime(hero) // Reuse hero data
+        setIsInitialLoading(false) // Show content now!
+        
+        // Batch 2: Fetch remaining data in background (non-blocking)
+        Promise.all([
+          fetchUpcomingAnime(12),
+          fetchAnimeByGenre(1, 12)
+        ]).then(([upcoming, action]) => {
+          setUpcomingAnime(upcoming)
+          setActionAnime(action)
+        }).catch(console.error)
+        
+      } catch (error) {
+        console.error('Failed to load data:', error)
+        setIsInitialLoading(false)
       }
     }
 
@@ -193,7 +127,7 @@ function App() {
     <div className="min-h-screen bg-[#0f0f0f]">
       <Header onSearch={handleSearch} onClearSearch={handleClearSearch} />
 
-      {/* Hero Section - relative positioning, data passed from parent */}
+      {/* Hero Section */}
       <div className="relative">
         <Hero 
           heroAnime={heroAnime}
@@ -257,64 +191,55 @@ function App() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
           >
-            {/* Content overlaps Hero with negative margin and higher z-index */}
+            {/* Content overlaps Hero */}
             <main className="relative z-20 -mt-24 space-y-2 bg-gradient-to-b from-transparent via-[#0f0f0f] to-[#0f0f0f]">
               <AnimeRow
                 title="Trending Now"
                 animeList={trendingAnime}
-                isLoading={loadingTrending}
-                error={errorTrending}
+                isLoading={isInitialLoading}
                 onPosterClick={handlePosterClick}
               />
               <AnimeRow
                 title="Popular on MangaVerse"
                 animeList={popularAnime}
-                isLoading={loadingPopular}
-                error={errorPopular}
+                isLoading={isInitialLoading}
                 onPosterClick={handlePosterClick}
               />
               <AnimeRow
                 title="Top Rated"
                 animeList={topAnime}
-                isLoading={loadingTop}
-                error={errorTop}
+                isLoading={isInitialLoading}
                 onPosterClick={handlePosterClick}
               />
               <AnimeRow
                 title="New Releases"
                 animeList={upcomingAnime}
-                isLoading={loadingUpcoming}
-                error={errorUpcoming}
+                isLoading={isInitialLoading}
                 onPosterClick={handlePosterClick}
               />
               <AnimeRow
                 title="Action & Adventure"
                 animeList={actionAnime}
-                isLoading={loadingAction}
-                error={errorAction}
+                isLoading={isInitialLoading}
                 onPosterClick={handlePosterClick}
               />
             </main>
 
-            {/* WatchingNow and Recommendations */}
-            <Suspense fallback={<SectionLoader />}>
-              <WatchingNow
-                animeList={trendingAnime.slice(0, 6)}
-                isLoading={loadingTrending}
-              />
-            </Suspense>
+            {/* WatchingNow Section */}
+            <WatchingNow
+              animeList={trendingAnime.slice(0, 6)}
+              isLoading={isInitialLoading}
+            />
 
-            <Suspense fallback={<SectionLoader />}>
-              <Recommendations
-                animeList={topAnime.slice(0, 8)}
-                isLoading={loadingTop}
-                onPosterClick={handlePosterClick}
-              />
-            </Suspense>
+            {/* Recommendations Section */}
+            <Recommendations
+              animeList={topAnime.slice(0, 10)}
+              isLoading={isInitialLoading}
+              onPosterClick={handlePosterClick}
+            />
 
-            <Suspense fallback={<SectionLoader />}>
-              <PeopleAlsoSearch />
-            </Suspense>
+            {/* People Also Search */}
+            <PeopleAlsoSearch />
           </motion.div>
         )}
       </AnimatePresence>
